@@ -30,10 +30,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build (sem push, só validação)
+      - name: Build UXPlay
         uses: docker/build-push-action@v6
-        with:
-          context: ./uxplay
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+        with: { context: ./uxplay, push: false, cache-from: type=gha, cache-to: "type=gha,mode=max" }
+      - name: Build Monitor
+        uses: docker/build-push-action@v6
+        with: { context: ./monitor, push: false, cache-from: "type=gha,scope=monitor", cache-to: "type=gha,mode=max,scope=monitor" }
+      - name: Build API
+        uses: docker/build-push-action@v6
+        with: { context: ./api, push: false, cache-from: "type=gha,scope=api", cache-to: "type=gha,mode=max,scope=api" }

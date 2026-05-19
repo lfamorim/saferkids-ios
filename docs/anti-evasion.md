@@ -42,9 +42,13 @@ silencioso para não acordar os pais à toa.
    está ligado pelo `wg-easy`, um peer ativo bate handshake a cada 25s.
 2. **AirPlay ativo** — `mtime` do MP4 mais recente em `recordings/`. Se foi
    atualizado há menos de `AIRPLAY_FRESH_SECONDS` (padrão 60s), está gravando.
-3. **Heartbeat externo** — `GET /heartbeat?token=…` vindo do iPhone *fora* da
-   VPN (Atalho iOS). Permite distinguir **DARK** (telefone online sem VPN) de
-   **OFFLINE** (telefone realmente desligado/sem rede).
+3. **mtime do MP4 da criança** — `RECORDINGS_DIR/<nome-da-criança>/...mp4`.
+   Sessão AirPlay ativa = ffmpeg está escrevendo no MP4. Como cada criança
+   tem sua própria subpasta (criada pelo supervisor), conseguimos saber
+   quem está mirrorando agora mesmo com várias sessões simultâneas.
+4. **Heartbeat externo opcional** — `GET /heartbeat?token=…` vindo do iPhone
+   *fora* da VPN (Atalho iOS). Permite distinguir **DARK** (telefone online
+   sem VPN) de **OFFLINE** (telefone realmente desligado/sem rede).
 
 ## Configurando o Atalho iOS de heartbeat (camada chave)
 

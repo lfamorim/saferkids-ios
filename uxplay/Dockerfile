@@ -23,7 +23,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
         libssl3 libplist3 \
-        avahi-daemon avahi-utils libnss-mdns \
+        avahi-daemon avahi-utils libnss-mdns dbus \
         libavahi-compat-libdnssd1 \
         gstreamer1.0-plugins-base \
         gstreamer1.0-plugins-good \
@@ -32,16 +32,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gstreamer1.0-libav \
         gstreamer1.0-tools \
         ffmpeg \
+        iproute2 \
+        python3 python3-yaml \
         tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /out/ /
-
-COPY entrypoint.sh /entrypoint.sh
-COPY recorder.sh   /recorder.sh
+COPY supervisor.py /supervisor.py
 COPY avahi-daemon.conf /etc/avahi/avahi-daemon.conf
-RUN chmod +x /entrypoint.sh /recorder.sh
 
 VOLUME ["/recordings"]
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python3", "-u", "/supervisor.py"]

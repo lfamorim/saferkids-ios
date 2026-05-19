@@ -43,13 +43,18 @@ services:
     restart: unless-stopped
     network_mode: host
     environment:
-      - UXPLAY_NAME=${UXPLAY_NAME:-saferkids}
+      - UXPLAY_PREFIX=${UXPLAY_NAME:-saferkids}
       - SEGMENT_SECONDS=${SEGMENT_SECONDS:-600}
       - RECORDINGS_DIR=/recordings
+      - CHILDREN_URL=http://localhost:8090/children.json
+      - CHILDREN_FEED_TOKEN=${CHILDREN_FEED_TOKEN:-}
+      - POD_NAME=${POD_NAME:-saferkids-0}
+      - REPLICAS=${REPLICAS:-1}
     volumes:
       - ./recordings:/recordings
     depends_on:
       - wg-easy
+      - api
 
   # ─────────────────────────────────────────────────────────────────────────
   # Monitor: detecta evasão (VPN/AirPlay desligados com iPhone ligado) e
@@ -75,7 +80,27 @@ services:
       - IDLE_GRACE_SECONDS=${IDLE_GRACE_SECONDS:-300}
       - USAGE_WINDOW=${USAGE_WINDOW:-07:00-22:00}
       - TZ=${TZ:-America/Sao_Paulo}
+      - CHILDREN_URL=http://localhost:8090/children.json
+      - CHILDREN_FEED_TOKEN=${CHILDREN_FEED_TOKEN:-}
     volumes:
       - ./recordings:/recordings:ro
     depends_on:
       - uxplay
+      - api
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # API CRUD de crianças (FastAPI + SQLite). É a fonte da verdade do
+  # registro: monitor e supervisor consomem GET /children.json em loop.
+  # ─────────────────────────────────────────────────────────────────────────
+  api:
+    build: ./api
+    container_name: saferkids-api
+    restart: unless-stopped
+    network_mode: host           # mesmo network namespace que uxplay/monitor
+    environment:
+      - DATABASE_URL=sqlite:////data/saferkids.db
+      - API_TOKEN=${API_TOKEN:-}
+      - CHILDREN_FEED_TOKEN=${CHILDREN_FEED_TOKEN:-}
+      - WG_IP_RANGE=${WG_IP_RANGE:-10.8.0.2-10.8.0.254}
+    volumes:
+      - ./data/api:/data

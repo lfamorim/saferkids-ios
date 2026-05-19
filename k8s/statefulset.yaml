@@ -14,7 +14,8 @@ metadata:
     app: saferkids
 spec:
   serviceName: saferkids-headless
-  replicas: 1
+  replicas: 1            # ajuste para escalar horizontalmente; supervisor shardea por ordinal
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       app: saferkids
@@ -80,14 +81,20 @@ spec:
             capabilities:
               add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE"]
           env:
-            - name: UXPLAY_NAME
-              valueFrom: { secretKeyRef: { name: saferkids-config, key: UXPLAY_NAME } }
+            - name: UXPLAY_PREFIX
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: UXPLAY_NAME, optional: true } }
             - name: SEGMENT_SECONDS
-              valueFrom: { secretKeyRef: { name: saferkids-config, key: SEGMENT_SECONDS } }
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: SEGMENT_SECONDS, optional: true } }
             - name: RECORDINGS_DIR
               value: /recordings
-          # AirPlay usa portas fixas TCP 7000/7100 e várias UDP. Como hostNetwork
-          # está ligado, elas já estão expostas no nó — basta liberar no firewall.
+            - name: CHILDREN_URL
+              value: "http://saferkids-api.saferkids.svc.cluster.local:8090/children.json"
+            - name: CHILDREN_FEED_TOKEN
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: CHILDREN_FEED_TOKEN, optional: true } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: REPLICAS
+              value: "1"   # mantenha sincronizado com .spec.replicas (ou use kustomize patch)
           volumeMounts:
             - { name: recordings, mountPath: /recordings }
           resources:
@@ -124,6 +131,10 @@ spec:
               value: "07:00-22:00"
             - name: TZ
               value: "America/Sao_Paulo"
+            - name: CHILDREN_URL
+              value: "http://saferkids-api.saferkids.svc.cluster.local:8090/children.json"
+            - name: CHILDREN_FEED_TOKEN
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: CHILDREN_FEED_TOKEN, optional: true } }
           ports:
             - { name: monitor, containerPort: 8088, protocol: TCP, hostPort: 8088 }
           volumeMounts:

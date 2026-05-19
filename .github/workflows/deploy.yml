@@ -61,6 +61,17 @@ jobs:
           cache-from: type=gha,scope=monitor
           cache-to: type=gha,mode=max,scope=monitor
 
+      - name: Build & push API
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          push: true
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/api:${{ github.sha }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/api:latest
+          cache-from: type=gha,scope=api
+          cache-to: type=gha,mode=max,scope=api
+
       - name: Obter credenciais do GKE
         uses: google-github-actions/get-gke-credentials@v2
         with:
@@ -73,6 +84,7 @@ jobs:
           BASE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}"
           kustomize edit set image __IMAGE__=${BASE}/uxplay:${{ github.sha }}
           kustomize edit set image __MONITOR_IMAGE__=${BASE}/monitor:${{ github.sha }}
+          kustomize edit set image __API_IMAGE__=${BASE}/api:${{ github.sha }}
 
       - name: Aplicar Secret (a partir do GitHub Secret JSON)
         env:

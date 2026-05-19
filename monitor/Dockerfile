@@ -5,6 +5,7 @@ FROM python:3.12-slim
 # network_mode: host no docker-compose).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wireguard-tools \
+        iproute2 \
         ca-certificates \
         tini \
     && rm -rf /var/lib/apt/lists/*

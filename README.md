@@ -31,10 +31,11 @@ Os arquivos ficam em pedaços curtos (padrão 10 min) para que a IA possa analis
 
 ## Componentes
 
-- **VPN — `wg-easy`**: WireGuard com interface web. Gera um QR Code que a criança (ou você) escaneia **uma única vez** no app oficial **WireGuard** da App Store. Configuração no iPhone leva ~30 segundos.
-- **Receptor AirPlay — `UXPlay`**: recebe o espelhamento de tela do iOS sem precisar de uma Apple TV. Roda *headless* (sem monitor) e com Bonjour anunciado na interface VPN para o iPhone enxergar o receptor.
-- **Gravador — `ffmpeg`**: copia o stream H.264 direto para MP4 (sem reencodar, ~0% de CPU), dividindo em arquivos de `SEGMENT_SECONDS` segundos cada, com `+faststart` para análise imediata.
-- **Pasta `recordings/`**: estrutura `recordings/<sessao>/<sessao>_part_000.mp4`, pronta para ser consumida por qualquer pipeline de IA (visão computacional, Vision Language Models, OCR de tela, etc.).
+- **VPN — `wg-easy`**: WireGuard com interface web. Gera um QR Code que a criança escaneia **uma única vez** no app **WireGuard** da App Store.
+- **API — FastAPI + SQLite (`api/`)**: CRUD de crianças. Aloca IPs `/32` automaticamente. É a fonte da verdade que monitor e supervisor consomem.
+- **Supervisor — `uxplay/supervisor.py`**: dentro do Pod, faz spawn de **N processos UXPlay simultâneos** (1 por criança designada), cada um com nome Bonjour próprio (`saferkids-<nome>`) e ffmpeg dedicado segmentando MP4 sob `recordings/<nome>/`.
+- **Monitor — `monitor/monitor.py`**: detecta evasão por criança (state machine RECORDING/IDLE/DARK/OFFLINE), alerta via Telegram/Webhook, expõe `/heartbeat`, `/status`, `/metrics`.
+- **Pasta `recordings/<nome>/<sessao>/*.mp4`**: pronta para pipelines de IA por criança.
 
 ---
 
@@ -74,7 +75,28 @@ docker compose ps
 docker compose logs -f uxplay
 ```
 
-## 3. Configurar o iPhone/iPad da criança (uma única vez)
+## 3. Cadastrar a criança na API
+
+A API CRUD escuta em `:8090` (host network).
+
+```bash
+# (opcional) protege com Bearer token
+export API_TOKEN="$(openssl rand -hex 24)"   # também coloque em .env
+
+# cria — IP /32 alocado automaticamente do range WG_IP_RANGE
+curl -sS -X POST http://localhost:8090/children \
+  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"ana"}'
+# → {"id":1,"name":"ana","wg_ip":"10.8.0.2",...}
+
+curl -sS http://localhost:8090/children -H "Authorization: Bearer $API_TOKEN"
+curl -sS -X DELETE http://localhost:8090/children/1 -H "Authorization: Bearer $API_TOKEN"
+```
+
+Depois disso, vá ao `wg-easy` (`:51821`), crie um peer WireGuard atribuindo o **mesmo IP** que a API alocou (e copie a `wg_pubkey` retornada de volta com `PATCH /children/1` se quiser cross-check). O supervisor detecta a entrada em ≤20s e sobe um receiver AirPlay chamado `saferkids-ana`.
+
+## 4. Configurar o iPhone/iPad da criança (uma única vez)
 
 1. Instale o app gratuito **WireGuard** na App Store.
 2. No computador, abra `http://<ip-do-servidor>:51821` e faça login.
@@ -84,22 +106,22 @@ docker compose logs -f uxplay
 
 > Dica: para que o túnel fique sempre ligado, ative **"Conectar sob demanda"** no perfil do WireGuard no iOS (em *Configurações → VPN*).
 
-## 4. Gravar uma sessão
+## 5. Gravar uma sessão
 
 1. Com o WireGuard ligado, abra a **Central de Controle** no iPhone/iPad.
 2. Toque em **Espelhamento de Tela**.
-3. Selecione **`saferkids`** (ou o que estiver em `UXPLAY_NAME`).
+3. Selecione **`saferkids-ana`** (o nome é `<UXPLAY_PREFIX>-<nome-da-criança>`).
 4. A tela passa a ser transmitida ao servidor. Os arquivos aparecem em:
 
 ```
-recordings/<AAAAMMDD_HHMMSS>/<AAAAMMDD_HHMMSS>_part_000.mp4
-                              <AAAAMMDD_HHMMSS>_part_001.mp4
-                              ...
+recordings/ana/<AAAAMMDD_HHMMSS>_part_000.mp4
+recordings/ana/<AAAAMMDD_HHMMSS>_part_001.mp4
+recordings/bob/<AAAAMMDD_HHMMSS>_part_000.mp4   # outra criança, em paralelo
 ```
 
 5. Tocar em **Parar Espelhamento** finaliza o último MP4 automaticamente; uma nova sessão cria uma nova pasta.
 
-## 5. Análise pela IA
+## 6. Análise pela IA
 
 Cada MP4 é independente, com cabeçalho `+faststart`, e pode ser consumido assim que finalizado. Exemplo de gancho simples — observa a pasta e dispara seu modelo:
 

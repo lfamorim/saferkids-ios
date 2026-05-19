@@ -1,0 +1,68 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: saferkids-api-data
+  namespace: saferkids
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saferkids-api
+  namespace: saferkids
+  labels:
+    app: saferkids-api
+spec:
+  replicas: 1                  # SQLite single-writer; promova p/ Postgres se precisar HA
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: saferkids-api }
+  template:
+    metadata:
+      labels: { app: saferkids-api }
+    spec:
+      containers:
+        - name: api
+          image: __API_IMAGE__   # substituído pelo CI
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 8090 }
+          env:
+            - { name: DATABASE_URL, value: "sqlite:////data/saferkids.db" }
+            - name: API_TOKEN
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: API_TOKEN, optional: true } }
+            - name: CHILDREN_FEED_TOKEN
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: CHILDREN_FEED_TOKEN, optional: true } }
+            - name: WG_IP_RANGE
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: WG_IP_RANGE, optional: true } }
+          volumeMounts:
+            - { name: data, mountPath: /data }
+          readinessProbe:
+            httpGet: { path: /healthz, port: 8090 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /healthz, port: 8090 }
+            periodSeconds: 30
+          resources:
+            requests: { cpu: "50m",  memory: "128Mi" }
+            limits:   { cpu: "500m", memory: "512Mi" }
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: saferkids-api-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: saferkids-api
+  namespace: saferkids
+spec:
+  type: ClusterIP
+  selector: { app: saferkids-api }
+  ports:
+    - { name: http, port: 8090, targetPort: 8090 }
