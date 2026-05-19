@@ -41,6 +41,11 @@ spec:
               valueFrom: { secretKeyRef: { name: saferkids-config, key: CHILDREN_FEED_TOKEN, optional: true } }
             - name: WG_IP_RANGE
               valueFrom: { secretKeyRef: { name: saferkids-config, key: WG_IP_RANGE, optional: true } }
+            # Integração wg-easy. Em K8s a API fala com o painel via o
+            # Service `saferkids-ui` (ClusterIP) na porta 51821.
+            - { name: WG_EASY_URL, value: "http://saferkids-ui.saferkids.svc.cluster.local:51821" }
+            - name: WG_EASY_PASSWORD
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: WG_PASSWORD, optional: true } }
           volumeMounts:
             - { name: data, mountPath: /data }
           readinessProbe:

@@ -102,5 +102,9 @@ services:
       - API_TOKEN=${API_TOKEN:-}
       - CHILDREN_FEED_TOKEN=${CHILDREN_FEED_TOKEN:-}
       - WG_IP_RANGE=${WG_IP_RANGE:-10.8.0.2-10.8.0.254}
+      # Integração wg-easy: cria/remove peers automaticamente. Deixe vazio
+      # para cair em "modo manual" (você cria o peer pelo painel :51821).
+      - WG_EASY_URL=${WG_EASY_URL:-http://localhost:51821}
+      - WG_EASY_PASSWORD=${WG_PASSWORD:-}
     volumes:
       - ./data/api:/data

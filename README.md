@@ -75,36 +75,48 @@ docker compose ps
 docker compose logs -f uxplay
 ```
 
-## 3. Cadastrar a criança na API
+## 3. Cadastrar a criança via API
 
-A API CRUD escuta em `:8090` (host network).
+A API CRUD escuta em `:8090` (host network) e já cria o peer WireGuard
+automaticamente — você nem precisa abrir o painel do wg-easy.
 
 ```bash
-# (opcional) protege com Bearer token
+# (opcional) protege a API com Bearer token
 export API_TOKEN="$(openssl rand -hex 24)"   # também coloque em .env
 
-# cria — IP /32 alocado automaticamente do range WG_IP_RANGE
+# cria a criança E o peer WireGuard de uma vez só
 curl -sS -X POST http://localhost:8090/children \
   -H "Authorization: Bearer $API_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"name":"ana"}'
-# → {"id":1,"name":"ana","wg_ip":"10.8.0.2",...}
+# → {"id":1,"name":"ana","wg_ip":"10.8.0.2","wg_pubkey":"AAAA…","wg_easy_id":"…"}
 
-curl -sS http://localhost:8090/children -H "Authorization: Bearer $API_TOKEN"
+# pega o QR Code (escaneie no app WireGuard do iPhone)
+curl -sS http://localhost:8090/children/1/qrcode \
+  -H "Authorization: Bearer $API_TOKEN" -o ana.svg && open ana.svg
+
+# OU baixa o arquivo .conf
+curl -sS http://localhost:8090/children/1/config \
+  -H "Authorization: Bearer $API_TOKEN" -o ana.conf
+
+# lista e remoção (remove no DB + wg-easy)
+curl -sS http://localhost:8090/children          -H "Authorization: Bearer $API_TOKEN"
 curl -sS -X DELETE http://localhost:8090/children/1 -H "Authorization: Bearer $API_TOKEN"
 ```
 
-Depois disso, vá ao `wg-easy` (`:51821`), crie um peer WireGuard atribuindo o **mesmo IP** que a API alocou (e copie a `wg_pubkey` retornada de volta com `PATCH /children/1` se quiser cross-check). O supervisor detecta a entrada em ≤20s e sobe um receiver AirPlay chamado `saferkids-ana`.
+O supervisor detecta a entrada nova em ≤20s e sobe um receiver AirPlay
+chamado `saferkids-ana`. Pronto.
 
 ## 4. Configurar o iPhone/iPad da criança (uma única vez)
 
 1. Instale o app gratuito **WireGuard** na App Store.
-2. No computador, abra `http://<ip-do-servidor>:51821` e faça login.
-3. Clique em **+ New Client** → dê um nome (ex.: `iphone-da-ana`) → aparece um **QR Code**.
-4. No app WireGuard do iOS: **Adicionar túnel → Criar a partir de QR Code** → escaneie.
-5. Ative o túnel. O dispositivo passa a ter um IP `10.8.0.x` na VPN.
+2. No app WireGuard do iOS: **Adicionar túnel → Criar a partir de QR Code** → escaneie
+   o SVG obtido em `GET /children/{id}/qrcode` (passo 3).
+3. Ative o túnel. O dispositivo passa a ter um IP `10.8.0.x` na VPN.
 
-> Dica: para que o túnel fique sempre ligado, ative **"Conectar sob demanda"** no perfil do WireGuard no iOS (em *Configurações → VPN*).
+> Dica: ative **"Conectar sob demanda"** no perfil do WireGuard no iOS
+> (em *Configurações → VPN*) para o túnel ficar sempre ligado. Quando o
+> usuário tenta desligar, o monitor detecta como `DARK` e alerta os pais.
 
 ## 5. Gravar uma sessão
 

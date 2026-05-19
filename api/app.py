@@ -22,9 +22,18 @@ import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+import logging
+
 import yaml
 from fastapi import Depends, FastAPI, Header, HTTPException, Response
+from sqlalchemy.exc import OperationalError
 from sqlmodel import Field, Session, SQLModel, create_engine, select
+
+from wg_easy import WgEasyClient, WgEasyError
+
+log = logging.getLogger("saferkids.api")
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"),
+                    format="%(asctime)s %(levelname)s %(message)s")
 
 # ── Config ──────────────────────────────────────────────────────────────────
 DB_URL       = os.getenv("DATABASE_URL", "sqlite:////data/saferkids.db")
@@ -37,6 +46,8 @@ engine = create_engine(
     connect_args={"check_same_thread": False} if DB_URL.startswith("sqlite") else {},
 )
 
+wg = WgEasyClient()
+
 
 # ── Models ──────────────────────────────────────────────────────────────────
 class Child(SQLModel, table=True):
@@ -44,6 +55,7 @@ class Child(SQLModel, table=True):
     name: str = Field(index=True, unique=True)
     wg_ip: str = Field(index=True, unique=True)
     wg_pubkey: str | None = None
+    wg_easy_id: str | None = Field(default=None, index=True)  # uuid do peer no wg-easy
     notes: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -93,9 +105,23 @@ def _validate_ip(ip: str) -> None:
 
 
 # ── Lifecycle ───────────────────────────────────────────────────────────────
+def _migrate() -> None:
+    """Adiciona colunas novas em DBs antigos (idempotente)."""
+    if not DB_URL.startswith("sqlite"):
+        return
+    with engine.begin() as conn:
+        try:
+            conn.exec_driver_sql("ALTER TABLE child ADD COLUMN wg_easy_id TEXT")
+            log.info("migration: coluna wg_easy_id adicionada")
+        except OperationalError:
+            pass  # já existe
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     SQLModel.metadata.create_all(engine)
+    _migrate()
+    log.info("wg-easy: %s", f"ativo ({wg.base_url})" if wg.enabled else "desativado (modo manual)")
     yield
 
 
@@ -110,20 +136,52 @@ def healthz() -> dict:
 
 @app.post("/children", status_code=201, dependencies=[Depends(_auth)])
 def create_child(payload: ChildCreate) -> Child:
+    """
+    Cria a criança e, se WG_EASY_URL estiver configurado, já provisiona o
+    peer WireGuard automaticamente — o IP/pubkey são decididos pelo wg-easy
+    e gravados aqui. Sem WG_EASY_URL, cai no modo manual (allocator local).
+    """
     if payload.wg_ip:
         _validate_ip(payload.wg_ip)
+
+    wg_easy_id: str | None = None
+    wg_ip: str | None = payload.wg_ip
+    wg_pubkey: str | None = payload.wg_pubkey
+
+    if wg.enabled:
+        try:
+            peer = wg.create_client(payload.name)
+        except WgEasyError as e:
+            raise HTTPException(502, f"wg-easy: {e}")
+        wg_easy_id = str(peer.get("id") or "")
+        # 'address' costuma vir como '10.8.0.5'; algumas builds usam 'addresses'.
+        wg_ip = peer.get("address") or peer.get("addresses") or wg_ip
+        if isinstance(wg_ip, list):
+            wg_ip = wg_ip[0]
+        if wg_ip:
+            wg_ip = str(wg_ip).split("/")[0]
+        wg_pubkey = peer.get("publicKey") or wg_pubkey
+
     with Session(engine) as s:
-        ip = payload.wg_ip or _alloc_ip(s)
+        if not wg_ip:
+            wg_ip = _alloc_ip(s)
         child = Child(
             name=payload.name,
-            wg_ip=ip,
-            wg_pubkey=payload.wg_pubkey,
+            wg_ip=wg_ip,
+            wg_pubkey=wg_pubkey,
+            wg_easy_id=wg_easy_id,
             notes=payload.notes,
         )
         s.add(child)
         try:
             s.commit()
-        except Exception as e:  # noqa: BLE001  (Integrity/Operational)
+        except Exception as e:  # noqa: BLE001
+            # Rollback: remove o peer recém-criado no wg-easy se a inserção falhou.
+            if wg_easy_id:
+                try:
+                    wg.delete_client(wg_easy_id)
+                except WgEasyError:
+                    log.exception("falha removendo peer órfão %s", wg_easy_id)
             raise HTTPException(409, f"conflito: {e}")
         s.refresh(child)
         return child
@@ -168,9 +226,51 @@ def delete_child(child_id: int) -> Response:
         c = s.get(Child, child_id)
         if not c:
             raise HTTPException(404)
+        wg_easy_id = c.wg_easy_id
         s.delete(c)
         s.commit()
+    if wg_easy_id and wg.enabled:
+        try:
+            wg.delete_client(wg_easy_id)
+        except WgEasyError as e:
+            log.warning("criança %d removida do DB, mas wg-easy falhou: %s", child_id, e)
     return Response(status_code=204)
+
+
+@app.get("/children/{child_id}/config", dependencies=[Depends(_auth)])
+def get_child_config(child_id: int) -> Response:
+    """Retorna o arquivo .conf do WireGuard (texto). Útil para colar no app desktop."""
+    with Session(engine) as s:
+        c = s.get(Child, child_id)
+    if not c:
+        raise HTTPException(404)
+    if not c.wg_easy_id or not wg.enabled:
+        raise HTTPException(409, "peer não foi provisionado pelo wg-easy (modo manual)")
+    try:
+        conf = wg.get_configuration(c.wg_easy_id)
+    except WgEasyError as e:
+        raise HTTPException(502, f"wg-easy: {e}")
+    return Response(
+        content=conf,
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{c.name}.conf"'},
+    )
+
+
+@app.get("/children/{child_id}/qrcode", dependencies=[Depends(_auth)])
+def get_child_qrcode(child_id: int) -> Response:
+    """Retorna o QR Code SVG — escaneie no app WireGuard do iOS."""
+    with Session(engine) as s:
+        c = s.get(Child, child_id)
+    if not c:
+        raise HTTPException(404)
+    if not c.wg_easy_id or not wg.enabled:
+        raise HTTPException(409, "peer não foi provisionado pelo wg-easy (modo manual)")
+    try:
+        svg = wg.get_qrcode_svg(c.wg_easy_id)
+    except WgEasyError as e:
+        raise HTTPException(502, f"wg-easy: {e}")
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 # ── Feed consumido pelos Pods ───────────────────────────────────────────────
