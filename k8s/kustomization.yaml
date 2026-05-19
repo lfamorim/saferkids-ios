@@ -1,0 +1,19 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: saferkids
+resources:
+  - namespace.yaml
+  - pvc.yaml
+  - statefulset.yaml
+  - services.yaml
+  # Aplique secret.yaml separadamente (não versionado).
+
+# A imagem do uxplay é definida pelo CI:
+#   kustomize edit set image uxplay=REGION-docker.pkg.dev/PROJECT/saferkids/uxplay:SHA
+images:
+  - name: __IMAGE__
+    newName: REGION-docker.pkg.dev/PROJECT/saferkids/uxplay
+    newTag: latest
+  - name: __MONITOR_IMAGE__
+    newName: REGION-docker.pkg.dev/PROJECT/saferkids/monitor
+    newTag: latest

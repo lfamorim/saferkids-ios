@@ -1,0 +1,4 @@
+.env
+data/
+recordings/
+k8s/secret.yaml

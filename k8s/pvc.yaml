@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: saferkids-recordings
+  namespace: saferkids
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: standard-rwo   # GKE: pd-balanced
+  resources:
+    requests:
+      storage: 100Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: saferkids-wg-data
+  namespace: saferkids
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: standard-rwo
+  resources:
+    requests:
+      storage: 1Gi

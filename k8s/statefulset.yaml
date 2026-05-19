@@ -1,0 +1,138 @@
+# Um único Pod com dois containers: wg-easy (cria a interface wg0 no host)
+# e uxplay (precisa enxergar wg0 para anunciar Bonjour para o iPhone).
+# hostNetwork=true faz os dois compartilharem a stack de rede do nó, o que é
+# exatamente o que o AirPlay precisa para descoberta multicast.
+#
+# IMPORTANTE: requer um Node Pool GKE *Standard* (não Autopilot), pois usa
+# hostNetwork + privileged + capabilities NET_ADMIN/SYS_MODULE.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: saferkids
+  namespace: saferkids
+  labels:
+    app: saferkids
+spec:
+  serviceName: saferkids-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saferkids
+  template:
+    metadata:
+      labels:
+        app: saferkids
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      terminationGracePeriodSeconds: 20
+      nodeSelector:
+        # Use o pool dedicado criado em infra/gcloud-bootstrap.sh
+        cloud.google.com/gke-nodepool: saferkids-pool
+      tolerations:
+        - key: "saferkids"
+          operator: "Equal"
+          value: "true"
+          effect: "NoSchedule"
+      containers:
+        # ────────────────────────────────────────────────────────────────────
+        - name: wg-easy
+          image: ghcr.io/wg-easy/wg-easy:14
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN", "SYS_MODULE"]
+          env:
+            - name: LANG
+              value: en
+            - name: WG_HOST
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: WG_HOST } }
+            - name: PASSWORD_HASH
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: WG_PASSWORD_HASH } }
+            - name: WG_PORT
+              value: "51820"
+            - name: WG_DEFAULT_ADDRESS
+              value: "10.8.0.x"
+            - name: WG_DEFAULT_DNS
+              value: "1.1.1.1"
+            - name: WG_ALLOWED_IPS
+              value: "10.8.0.0/24"
+            - name: WG_PERSISTENT_KEEPALIVE
+              value: "25"
+            - name: UI_TRAFFIC_STATS
+              value: "true"
+          ports:
+            - { name: wg-udp, containerPort: 51820, protocol: UDP, hostPort: 51820 }
+            - { name: wg-ui,  containerPort: 51821, protocol: TCP, hostPort: 51821 }
+          volumeMounts:
+            - { name: wg-data, mountPath: /etc/wireguard }
+          readinessProbe:
+            tcpSocket: { port: 51821 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+        # ────────────────────────────────────────────────────────────────────
+        - name: uxplay
+          image: __IMAGE__   # substituído pelo CI (kustomize edit set image)
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            # Avahi precisa de NET_BIND_SERVICE/NET_RAW; privileged simplifica.
+            privileged: true
+            capabilities:
+              add: ["NET_ADMIN", "NET_RAW", "NET_BIND_SERVICE"]
+          env:
+            - name: UXPLAY_NAME
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: UXPLAY_NAME } }
+            - name: SEGMENT_SECONDS
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: SEGMENT_SECONDS } }
+            - name: RECORDINGS_DIR
+              value: /recordings
+          # AirPlay usa portas fixas TCP 7000/7100 e várias UDP. Como hostNetwork
+          # está ligado, elas já estão expostas no nó — basta liberar no firewall.
+          volumeMounts:
+            - { name: recordings, mountPath: /recordings }
+          resources:
+            requests: { cpu: "200m", memory: "512Mi" }
+            limits:   { cpu: "2",    memory: "2Gi" }
+        # ────────────────────────────────────────────────────────────────────
+        # Monitor de evasão. Lê `wg show wg0 dump` (compartilha host network),
+        # observa os MP4s, expõe /heartbeat para o Atalho iOS e dispara
+        # alertas para o pai/mãe.
+        - name: monitor
+          image: __MONITOR_IMAGE__   # substituído pelo CI
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            capabilities:
+              add: ["NET_ADMIN"]
+          env:
+            - name: WG_INTERFACE
+              value: wg0
+            - name: RECORDINGS_DIR
+              value: /recordings
+            - name: HTTP_PORT
+              value: "8088"
+            - name: HEARTBEAT_TOKEN
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: HEARTBEAT_TOKEN, optional: true } }
+            - name: TELEGRAM_BOT_TOKEN
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: TELEGRAM_BOT_TOKEN, optional: true } }
+            - name: TELEGRAM_CHAT_ID
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: TELEGRAM_CHAT_ID, optional: true } }
+            - name: ALERT_WEBHOOK_URL
+              valueFrom: { secretKeyRef: { name: saferkids-config, key: ALERT_WEBHOOK_URL, optional: true } }
+            - name: IDLE_GRACE_SECONDS
+              value: "300"
+            - name: USAGE_WINDOW
+              value: "07:00-22:00"
+            - name: TZ
+              value: "America/Sao_Paulo"
+          ports:
+            - { name: monitor, containerPort: 8088, protocol: TCP, hostPort: 8088 }
+          volumeMounts:
+            - { name: recordings, mountPath: /recordings, readOnly: true }
+          resources:
+            requests: { cpu: "50m",  memory: "64Mi" }
+            limits:   { cpu: "500m", memory: "256Mi" }
+      volumes:
+        - name: wg-data
+          persistentVolumeClaim: { claimName: saferkids-wg-data }
+        - name: recordings
+          persistentVolumeClaim: { claimName: saferkids-recordings }

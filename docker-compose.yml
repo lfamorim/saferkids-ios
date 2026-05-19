@@ -1,0 +1,81 @@
+services:
+  # ─────────────────────────────────────────────────────────────────────────
+  # WireGuard VPN with web UI (QR-code generator for iOS in 1 click)
+  # UI:   http://<server-ip>:51821   (login with WG_PASSWORD)
+  # VPN:  udp/51820
+  # ─────────────────────────────────────────────────────────────────────────
+  wg-easy:
+    image: ghcr.io/wg-easy/wg-easy:14
+    container_name: saferkids-vpn
+    restart: unless-stopped
+    environment:
+      - LANG=en
+      - WG_HOST=${WG_HOST}
+      - PASSWORD_HASH=${WG_PASSWORD_HASH}
+      - WG_PORT=51820
+      - WG_DEFAULT_ADDRESS=10.8.0.x
+      - WG_DEFAULT_DNS=1.1.1.1
+      # Push only the AirPlay LAN to the iPhone so normal traffic isn't tunneled.
+      # Change to 0.0.0.0/0 if you want full-tunnel.
+      - WG_ALLOWED_IPS=10.8.0.0/24
+      - WG_PERSISTENT_KEEPALIVE=25
+      - UI_TRAFFIC_STATS=true
+    volumes:
+      - ./data/wg-easy:/etc/wireguard
+    ports:
+      - "51820:51820/udp"
+      - "51821:51821/tcp"
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # UXPlay (AirPlay-mirroring receiver) + Avahi/Bonjour + ffmpeg segmenter.
+  # Uses the host network so it can advertise Bonjour on wg0 (the VPN iface
+  # created by wg-easy on the same host) and be discovered by the iPhone.
+  # ─────────────────────────────────────────────────────────────────────────
+  uxplay:
+    build: ./uxplay
+    container_name: saferkids-uxplay
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - UXPLAY_NAME=${UXPLAY_NAME:-saferkids}
+      - SEGMENT_SECONDS=${SEGMENT_SECONDS:-600}
+      - RECORDINGS_DIR=/recordings
+    volumes:
+      - ./recordings:/recordings
+    depends_on:
+      - wg-easy
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Monitor: detecta evasão (VPN/AirPlay desligados com iPhone ligado) e
+  # avisa os pais via Telegram/Webhook. Lê wg show direto da iface do host.
+  # ─────────────────────────────────────────────────────────────────────────
+  monitor:
+    build: ./monitor
+    container_name: saferkids-monitor
+    restart: unless-stopped
+    network_mode: host
+    cap_add:
+      - NET_ADMIN          # permitido `wg show` na iface do host
+    environment:
+      - WG_INTERFACE=wg0
+      - RECORDINGS_DIR=/recordings
+      - HTTP_PORT=8088
+      - HEARTBEAT_TOKEN=${HEARTBEAT_TOKEN:-}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - ALERT_WEBHOOK_URL=${ALERT_WEBHOOK_URL:-}
+      - DARK_AFTER_SECONDS=${DARK_AFTER_SECONDS:-120}
+      - OFFLINE_AFTER_SECONDS=${OFFLINE_AFTER_SECONDS:-1800}
+      - IDLE_GRACE_SECONDS=${IDLE_GRACE_SECONDS:-300}
+      - USAGE_WINDOW=${USAGE_WINDOW:-07:00-22:00}
+      - TZ=${TZ:-America/Sao_Paulo}
+    volumes:
+      - ./recordings:/recordings:ro
+    depends_on:
+      - uxplay

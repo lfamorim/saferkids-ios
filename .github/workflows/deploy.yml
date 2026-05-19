@@ -1,0 +1,98 @@
+name: Deploy to GKE
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Workload Identity Federation (sem chave JSON).
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID:        ${{ vars.GCP_PROJECT_ID }}        # ex.: saferkids-prod
+  GCP_REGION:            ${{ vars.GCP_REGION }}            # ex.: southamerica-east1
+  GKE_CLUSTER:           ${{ vars.GKE_CLUSTER }}           # ex.: saferkids
+  GKE_LOCATION:          ${{ vars.GKE_LOCATION }}          # zone ou region do cluster
+  AR_REPOSITORY:         ${{ vars.AR_REPOSITORY }}         # ex.: saferkids
+  WIF_PROVIDER:          ${{ vars.WIF_PROVIDER }}          # projects/123/locations/global/workloadIdentityPools/gh/providers/gh
+  DEPLOY_SA:             ${{ vars.DEPLOY_SA }}             # github-deployer@PROJECT.iam.gserviceaccount.com
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure docker para Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev --quiet
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build & push UXPlay
+        uses: docker/build-push-action@v6
+        with:
+          context: ./uxplay
+          push: true
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/uxplay:${{ github.sha }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/uxplay:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build & push Monitor
+        uses: docker/build-push-action@v6
+        with:
+          context: ./monitor
+          push: true
+          tags: |
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/monitor:${{ github.sha }}
+            ${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}/monitor:latest
+          cache-from: type=gha,scope=monitor
+          cache-to: type=gha,mode=max,scope=monitor
+
+      - name: Obter credenciais do GKE
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER }}
+          location:     ${{ env.GKE_LOCATION }}
+
+      - name: Setar imagens no Kustomize
+        working-directory: k8s
+        run: |
+          BASE="${{ env.GCP_REGION }}-docker.pkg.dev/${{ env.GCP_PROJECT_ID }}/${{ env.AR_REPOSITORY }}"
+          kustomize edit set image __IMAGE__=${BASE}/uxplay:${{ github.sha }}
+          kustomize edit set image __MONITOR_IMAGE__=${BASE}/monitor:${{ github.sha }}
+
+      - name: Aplicar Secret (a partir do GitHub Secret JSON)
+        env:
+          SAFERKIDS_SECRET_JSON: ${{ secrets.SAFERKIDS_SECRET_JSON }}
+        run: |
+          # SAFERKIDS_SECRET_JSON deve conter:
+          # {"WG_HOST":"...","WG_PASSWORD_HASH":"...","UXPLAY_NAME":"saferkids","SEGMENT_SECONDS":"600"}
+          kubectl create namespace saferkids --dry-run=client -o yaml | kubectl apply -f -
+          jq -r 'to_entries[] | "--from-literal=" + .key + "=" + (.value|tostring)' \
+              <<<"$SAFERKIDS_SECRET_JSON" \
+            | xargs kubectl create secret generic saferkids-config \
+                --namespace saferkids --dry-run=client -o yaml \
+            | kubectl apply -f -
+
+      - name: Deploy
+        run: |
+          kubectl apply -k k8s/
+          kubectl -n saferkids rollout status statefulset/saferkids --timeout=5m
+
+      - name: Mostrar IP público da VPN
+        run: |
+          kubectl -n saferkids get svc saferkids-vpn \
+            -o jsonpath='{"VPN endpoint: "}{.status.loadBalancer.ingress[0].ip}{":51820/udp\n"}' || true
